@@ -1,0 +1,93 @@
+#include <ESP8266WiFi.h>
+#include <WiFiClientSecure.h>
+#include <TinyGPS++.h>
+#include <Wire.h>
+#include <MPU6050.h>
+
+// Wi-Fi Credentials
+const char* ssid = "YOUR_WIFI_SSID";
+const char* password = "YOUR_WIFI_PASSWORD";
+
+// Backend Server Details
+const char* server = "your-backend-server.com";
+const String apiKey = "YOUR_API_KEY"; // For authentication
+
+// Hardware Pins
+const int SOS_BUTTON = D2;  // GPIO4
+const int BUZZER = D1;      // GPIO5
+SoftwareSerial gpsSerial(D6, D5); // RX=D6, TX=D5 (For GPS)
+
+TinyGPSPlus gps;
+MPU6050 mpu;
+WiFiClient client;
+
+void setup() {
+  Serial.begin(115200);
+  gpsSerial.begin(9600);
+  Wire.begin();
+  mpu.initialize();
+
+  pinMode(SOS_BUTTON, INPUT_PULLUP);
+  pinMode(BUZZER, OUTPUT);
+
+  // Connect to Wi-Fi
+  WiFi.begin(ssid, password);
+  Serial.print("Connecting to WiFi");
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println("\nConnected!");
+}
+
+void loop() {
+  // Manual Trigger
+  if (digitalRead(SOS_BUTTON) == LOW) {
+    triggerEmergency();
+  }
+
+  // Fall Detection (MPU6050)
+  int16_t ax, ay, az;
+  mpu.getAcceleration(&ax, &ay, &az);
+  float accel = sqrt(ax*ax + ay*ay + az*az) / 16384.0; // Convert to G-force
+  if (accel > 2.5) { // Threshold for fall detection
+    triggerEmergency();
+  }
+
+  // Process GPS data
+  while (gpsSerial.available() > 0) {
+    gps.encode(gpsSerial.read());
+  }
+}
+
+void triggerEmergency() {
+  digitalWrite(BUZZER, HIGH);
+  
+  // Get GPS Location
+  float lat = 0.0, lng = 0.0;
+  if (gps.location.isValid()) {
+    lat = gps.location.lat();
+    lng = gps.location.lng();
+  }
+
+  // Send Data to Backend
+  if (WiFi.status() == WL_CONNECTED) {
+    String url = "/api/alert?lat=" + String(lat, 6) + 
+                 "&lng=" + String(lng, 6) + 
+                 "&api_key=" + apiKey;
+
+    Serial.print("Connecting to server...");
+    if (client.connect(server, 80)) {
+      client.print(String("GET ") + url + " HTTP/1.1\r\n" +
+                  "Host: " + server + "\r\n" +
+                  "Connection: close\r\n\r\n");
+      Serial.println("Alert sent!");
+    } else {
+      Serial.println("Connection failed");
+    }
+    client.stop();
+  }
+
+  delay(10000); // Buzzer duration
+  digitalWrite(BUZZER, LOW);
+}
